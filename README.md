@@ -1,4 +1,4 @@
-# pillar-gguf-scanner
+# Pillar GGUF Scanner
 
 High-level scanning utilities for GGUF model files. The library extracts embedded chat templates, runs heuristic checks for prompt-injection markers, and optionally consults Pillar's remote scanning API for deeper analysis.
 
@@ -38,7 +38,9 @@ pip install pillar-gguf-scanner
 from pillar_gguf_scanner import GGUFTemplateScanner, Verdict
 
 scanner = GGUFTemplateScanner()
-result = scanner.scan("models/my-model.gguf")  # accepts paths, URLs, or HuggingFaceRepoRef
+
+# Scan a local GGUF file
+result = scanner.scan("models/my-model.gguf")
 
 print(result.verdict)  # Verdict.CLEAN, Verdict.SUSPICIOUS, Verdict.MALICIOUS, or Verdict.ERROR
 for finding in result.findings:
@@ -62,35 +64,177 @@ result = scanner.scan("models/my-model.gguf", use_pillar=True)
 
 Set `use_pillar=False` to opt out of remote calls on a per-scan basis. Remote requests use `httpx` clients supplied by the caller or managed internally. Attach `ScannerConfig(event_handler=...)` to receive structured telemetry such as `pillar_response`, `remote_fetch_failed`, and `heuristic_match` events.
 
-## Remote and Async Scans
+## Scanning Different Sources
+
+### Scanning Hugging Face Models
+
+Scan GGUF files hosted on Hugging Face repositories using the `scan_huggingface()` method:
+
+```python
+from pillar_gguf_scanner import GGUFTemplateScanner
+
+scanner = GGUFTemplateScanner()
+
+# Synchronous scanning
+result = scanner.scan_huggingface(
+    repo_id="TheBloke/Llama-2-7B-GGUF",
+    filename="llama-2-7b.Q4_K_M.gguf",
+    revision="main",  # optional, defaults to "main"
+    token="hf_xxx"    # optional, for private repos
+)
+
+print(f"Verdict: {result.verdict.value}")
+for finding in result.findings:
+    print(f"[{finding.severity.value}] {finding.rule_id}: {finding.message}")
+```
+
+Alternatively, use the unified `scan()` method with a `HuggingFaceRepoRef`:
+
+```python
+from pillar_gguf_scanner import GGUFTemplateScanner, HuggingFaceRepoRef
+
+scanner = GGUFTemplateScanner()
+ref = HuggingFaceRepoRef(
+    repo_id="TheBloke/Llama-2-7B-GGUF",
+    filename="llama-2-7b.Q4_K_M.gguf",
+    revision="main"
+)
+result = scanner.scan(ref)
+```
+
+### Scanning from URLs
+
+Scan GGUF files from direct download URLs:
+
+```python
+from pillar_gguf_scanner import GGUFTemplateScanner
+
+scanner = GGUFTemplateScanner()
+
+# Direct URL scanning
+result = scanner.scan_url("https://example.com/model.gguf")
+
+# Or use the unified scan() method
+result = scanner.scan("https://example.com/model.gguf")
+```
+
+## Async Scans
+
+All scanning methods have async variants for concurrent operations:
 
 ```python
 import asyncio
+from pillar_gguf_scanner import GGUFTemplateScanner
+
+scanner = GGUFTemplateScanner()
+
+async def scan_models():
+    # Async Hugging Face scanning
+    hf_result = await scanner.ascan_huggingface(
+        repo_id="TheBloke/Llama-2-7B-GGUF",
+        filename="llama-2-7b.Q4_K_M.gguf",
+        token="hf_xxx"  # optional
+    )
+
+    # Async URL scanning
+    url_result = await scanner.ascan_url("https://example.com/model.gguf")
+
+    # Async local file scanning
+    path_result = await scanner.ascan_path("models/local-model.gguf")
+
+    return hf_result, url_result, path_result
+
+results = asyncio.run(scan_models())
+```
+
+For efficient batch scanning with connection pooling, use `scanner_session()` or `ascanner_session()` context managers:
+
+```python
+from pillar_gguf_scanner import ascanner_session
+
+async def batch_scan(repo_files):
+    async with ascanner_session() as scanner:
+        tasks = [
+            scanner.ascan_huggingface(repo_id, filename)
+            for repo_id, filename in repo_files
+        ]
+        return await asyncio.gather(*tasks)
+```
+
+The low-level helpers `fetch_chat_templates_from_url`, `afetch_chat_templates_from_url`, and `fetch_chat_templates_from_huggingface` are also available for integrating into existing pipelines.
+
+## Common Patterns
+
+### Quick Reference: Scanning Methods
+
+```python
 from pillar_gguf_scanner import GGUFTemplateScanner, HuggingFaceRepoRef
 
 scanner = GGUFTemplateScanner()
 
-# direct URL (sync)
-url_result = scanner.scan("https://example.com/model.gguf")
+# Local file
+result = scanner.scan("path/to/model.gguf")
+result = scanner.scan_path("path/to/model.gguf")  # explicit method
 
-# Hugging Face repo (async)
-async def main():
-    async_result = await scanner.ascan_huggingface(
-        repo_id="owner/repo",
-        filename="model.gguf",
-        token="hf_xxx",  # optional
-    )
-    print(async_result.verdict)
+# Direct URL
+result = scanner.scan("https://example.com/model.gguf")
+result = scanner.scan_url("https://example.com/model.gguf")  # explicit method
 
-# Or via the unified HuggingFaceRepoRef helper
-hf_result = scanner.scan(
-    HuggingFaceRepoRef(repo_id="owner/repo", filename="model.gguf", revision="main")
-)
+# Hugging Face - Method 1: Direct method (recommended for clarity)
+result = scanner.scan_huggingface("owner/repo", "model.gguf")
 
-asyncio.run(main())
+# Hugging Face - Method 2: Via unified scan() with HuggingFaceRepoRef
+ref = HuggingFaceRepoRef(repo_id="owner/repo", filename="model.gguf")
+result = scanner.scan(ref)
 ```
 
-The low-level helpers `fetch_chat_templates_from_url`, `afetch_chat_templates_from_url`, and `build_huggingface_url` are also available for integrating into existing pipelines. When you need to reuse HTTP connections across multiple scans, wrap your workflow with `scanner_session()` or `ascanner_session()` to share `httpx` clients safely.
+### Checking Scan Results
+
+```python
+from pillar_gguf_scanner import Verdict
+
+result = scanner.scan("model.gguf")
+
+# Check overall verdict
+if result.verdict == Verdict.MALICIOUS:
+    print("⚠️  Malicious template detected!")
+elif result.verdict == Verdict.SUSPICIOUS:
+    print("⚠️  Suspicious patterns found")
+elif result.verdict == Verdict.CLEAN:
+    print("✅ No threats detected")
+elif result.verdict == Verdict.ERROR:
+    print("❌ Scan failed")
+    for error in result.errors:
+        print(f"  {error.code}: {error.message}")
+
+# Access findings
+for finding in result.findings:
+    print(f"[{finding.severity.value}] {finding.rule_id}: {finding.message}")
+    if finding.snippet:
+        print(f"  Snippet: {finding.snippet[:100]}...")
+
+# Check if templates were found
+if result.evidence.default_template:
+    print(f"Default template length: {result.evidence.template_lengths['default']}")
+    print(f"Template hash: {result.evidence.template_hashes['default']}")
+```
+
+### Batch Scanning with Connection Reuse
+
+```python
+from pillar_gguf_scanner import scanner_session
+
+models = [
+    ("TheBloke/Llama-2-7B-GGUF", "llama-2-7b.Q4_K_M.gguf"),
+    ("TheBloke/Mistral-7B-GGUF", "mistral-7b.Q4_K_M.gguf"),
+]
+
+# Connection pooling for efficiency
+with scanner_session() as scanner:
+    for repo_id, filename in models:
+        result = scanner.scan_huggingface(repo_id, filename)
+        print(f"{repo_id}/{filename}: {result.verdict.value}")
+```
 
 ## Customising Heuristics
 
