@@ -1,0 +1,37 @@
+name: Publish
+
+on:
+  push:
+    tags:
+      - "v*"
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    environment: pypi            # create this env in repo settings
+    permissions:
+      id-token: write            # required for Trusted Publishing
+      contents: read
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Install uv
+      - uses: astral-sh/setup-uv@v6
+
+      - name: Install Python
+      - run: uv python install 3.13
+
+      - name: Build dists
+      - run: uv build
+
+      # optional: quick smoke tests on the built artifacts
+      - name: Smoke test wheel
+      - run: uv run --isolated --no-project --with dist/*.whl tests/smoke_test.py
+
+      - name: Smoke test sdist
+      - run: uv run --isolated --no-project --with dist/*.tar.gz tests/smoke_test.py
+
+      - name: Publish to PyPI
+      - run: uv publish
+

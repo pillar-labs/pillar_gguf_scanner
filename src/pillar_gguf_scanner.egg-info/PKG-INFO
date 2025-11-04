@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: pillar-gguf-scanner
-Version: 0.1.0
+Version: 0.0.1
 Summary: Fast, programmatic scanning utilities for GGUF chat templates.
 Author: Pillar Security
 License: Apache-2.0
@@ -17,7 +17,11 @@ Dynamic: license-file
 
 # pillar-gguf-scanner
 
-High-level scanning utilities for GGUF model files. The library extracts embedded chat templates, runs heuristic checks for prompt-injection markers, and optionally consults Pillar’s remote scanning API for deeper analysis.
+High-level scanning utilities for GGUF model files. The library extracts embedded chat templates, runs heuristic checks for prompt-injection markers, and optionally consults Pillar's remote scanning API for deeper analysis.
+
+## Background
+
+This project addresses security threats identified in research by [Pillar Security on LLM backdoors at the inference level](https://www.pillar.security/blog/llm-backdoors-at-the-inference-level-the-threat-of-poisoned-templates). The research demonstrates how malicious chat templates embedded in GGUF model files can be exploited for prompt injection and backdoor attacks, enabling unauthorized control over model behavior.
 
 ## Features
 
@@ -105,23 +109,6 @@ asyncio.run(main())
 
 The low-level helpers `fetch_chat_templates_from_url`, `afetch_chat_templates_from_url`, and `build_huggingface_url` are also available for integrating into existing pipelines. When you need to reuse HTTP connections across multiple scans, wrap your workflow with `scanner_session()` or `ascanner_session()` to share `httpx` clients safely.
 
-## Observability Hooks
-
-Scans emit structured events when you provide `ScannerConfig(event_handler=...)`. Each callback receives an event name and a payload dictionary:
-
-```python
-from pillar_gguf_scanner import GGUFTemplateScanner, ScannerConfig
-
-def handle_event(name: str, payload: dict) -> None:
-    if name == "remote_fetch_failed":
-        print(f"remote fetch failure: {payload['error']}")
-
-scanner = GGUFTemplateScanner(config=ScannerConfig(event_handler=handle_event))
-scanner.scan("https://example.com/bad-model.gguf")
-```
-
-Built-in events include `heuristic_match`, `pillar_response`, `pillar_scan_failed`, and `remote_fetch_failed`.
-
 ## Customising Heuristics
 
 Provide a `ScannerConfig` with your own rule set or severity overrides:
@@ -186,6 +173,89 @@ usage: pillar-gguf-scanner [-h] [--pillar-api-key PILLAR_API_KEY] [--no-pillar]
 * `uv run python -m build` – create distribution artifacts
 
 Tests live in `tests/` and cover parsing, heuristics, and remote fetch logic. The suite requires the `test` dependency group.
+
+## Troubleshooting
+
+### API Key Issues
+
+**Problem**: "Pillar API key not working" or authentication errors
+**Solution**:
+- Verify your API key is set correctly: `export PILLAR_API_KEY="your-key-here"`
+- Check the key is passed to the scanner: `GGUFTemplateScanner(pillar_api_key=os.environ["PILLAR_API_KEY"])`
+- Ensure you're using `use_pillar=True` when calling `scan()`
+- Contact Pillar support if authentication continues to fail
+
+### Timeout Errors
+
+**Problem**: "Remote fetch timeout" or requests timing out
+**Solution**:
+- Increase the timeout in your config:
+  ```python
+  config = ScannerConfig(request_timeout=120.0)  # 2 minutes
+  scanner = GGUFTemplateScanner(config=config)
+  ```
+- Check your network connection and firewall settings
+- For large models, the initial header fetch may take longer
+
+### False Positives
+
+**Problem**: Legitimate templates flagged as suspicious
+**Solution**:
+- Adjust severity levels to reduce noise:
+  ```python
+  config = ScannerConfig(
+      url_severity=Severity.LOW,      # URLs are common in templates
+      base64_severity=Severity.INFO,  # Reduce base64 alerts
+  )
+  ```
+- Review the specific findings and snippets to understand what triggered the detection
+- Create custom rules that override defaults using `merge_heuristics()`
+
+### Range Request Errors
+
+**Problem**: "Server does not support range requests" when scanning URLs
+**Solution**:
+- The URL must support HTTP Range headers for efficient scanning
+- Download the file locally and use `scan_path()` instead:
+  ```python
+  scanner.scan_path("/path/to/downloaded/model.gguf")
+  ```
+
+### GGUF Parse Errors
+
+**Problem**: "Invalid GGUF magic" or "Buffer underrun" errors
+**Solution**:
+- Verify the file is actually a GGUF file: `file model.gguf` should show binary data
+- Check the file isn't corrupted or truncated
+- Ensure you have read permissions: `ls -l model.gguf`
+- For remote URLs, verify the URL points directly to the .gguf file, not an HTML page
+
+### Missing Chat Templates
+
+**Problem**: GGUF file scans as CLEAN but you expected findings
+**Solution**:
+- Check if the model actually has chat templates:
+  ```python
+  result = scanner.scan("model.gguf")
+  if not result.evidence.has_template:
+      print("No chat template found in this model")
+  ```
+- Some GGUF files don't include chat templates in metadata
+- View extracted templates: `print(result.evidence.default_template)`
+
+### Getting Help
+
+If you encounter issues not covered here:
+1. Check the examples in `examples/` directory for working code
+2. Enable debug logging to see detailed error information:
+   ```python
+   import logging
+   logging.basicConfig(level=logging.DEBUG)
+   ```
+3. Open an issue on GitHub with:
+   - Error message and full traceback
+   - Scanner configuration and code snippet
+   - GGUF file source (if publicly accessible)
 
 ## Contributing
 
